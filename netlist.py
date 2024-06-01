@@ -140,12 +140,15 @@ if __name__ == '__main__':
                     print(f"\t{pin.designator} ({d.GetComponent(pin.designator).name}): pin {pin.pin}")
         else:
             for pin_no, net in sorted(c.pin_nets.items()):
-                print(f"Pin {pin_no}: Net {net.name} connects to:")
+
+                print(f"{net.name:20}{pin_no:2} -> ", end = '')
+                #print(f"Pin {pin_no}: Net {net.name} connects to:")
                 if net.name != 'GND' and net.name != 'VCC':
                     for connectedpin in net.pins:
                         if not (connectedpin.designator == c.designator and connectedpin.pin == pin_no):
-                            print(f"\t{connectedpin.designator} ({d.GetComponent(connectedpin.designator).name}): pin {connectedpin.pin}")
+                            print(f"{connectedpin.designator:5} {connectedpin.pin:2}   ", end ='')
+                    
                 else:
-                    print(f"Connections not listed for net {net.name}..")
-                print('\n')
+                    print(f"Connections not listed for net {net.name}..", end = '')
+                print('')
             
