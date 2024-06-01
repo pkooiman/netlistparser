@@ -1,4 +1,7 @@
+#! /usr/bin/env python3.9
+
 from dataclasses import dataclass
+from itertools   import chain
 import argparse
 
 @dataclass
@@ -31,12 +34,12 @@ class Design:
         self.Components = {}
         self.Nets = {}
         pass
-     
+
     def ReadPartlist(self, lines: list[str]) -> int:
         if not lines[0].startswith('PARTS LIST'):
                 print('Expected "PARTS LIST", wrong file?')
                 return 0
-            
+
         for index, l in enumerate(lines[1:]):
             l = l.lstrip('\x0c')
             if l.rstrip('\n') == 'EOS':
@@ -60,7 +63,7 @@ class Design:
         if not lines[0].startswith('NET LIST'):
                 print('Expected "NET LIST", wrong file?')
                 return 0
-            
+
         curnet: Net
         curnet = None
         for index, l in enumerate(lines[1:]):
@@ -70,8 +73,8 @@ class Design:
             if l.rstrip('\n') == 'EOS':
                 #index 0 is line [1] here so add two to get line after EOS
                 return index + 2
-            
-            
+
+
             if l.startswith('NODE'):
                 netname = l.split()[1]
                 if not netname in self.Nets:
@@ -79,8 +82,8 @@ class Design:
                     self.Nets[curnet.name] = curnet
                 else:
                     curnet = self.Nets[netname]
-                
-                
+
+
             else:
                 l = l[4:]
                 for i, c in enumerate(l[::12]):
@@ -90,7 +93,7 @@ class Design:
                         print(f"Error! Found component {designator} but no current net")
                         return 0
                     curnet.pins.append(Pin(designator, int(pin)))
-                
+
 
     def BuildRef(self):
         for net in self.Nets.values():
@@ -104,7 +107,7 @@ class Design:
         with open(filename, 'rt') as ct:
             lines = ct.readlines()
         nextindex = self.ReadPartlist(lines)
-        
+
         self.ReadNetlist(lines[nextindex:])
         self.BuildRef()
 
@@ -112,43 +115,102 @@ class Design:
         if not designator in self.Components:
             return None
         return self.Components[designator]
-        
-    
 
-if __name__ == '__main__':
+#---------------------------------------------------------------------------
+# planned_output = { pin_no -> { name: ..., destinations: [...] } }
+
+NOT_CONNECTED = '(n/c)'
+
+def print_pin_output(planned_output, min_pin = 1, max_pin = None):
+    max_name_len       = max(map(lambda e: len(e['name']), chain(planned_output.values(), [{'name': NOT_CONNECTED}])))
+    all_destinations   = list(chain.from_iterable((p.get('destinations', []) for p in planned_output.values())))
+    max_designator_len = max(map(lambda e: len(e['designator']), chain(all_destinations, [{'designator': 'ABCD'}])))
+
+    if not max_pin:
+        max_pin = max(planned_output.keys())
+
+    for pin_no in range(min_pin, (max_pin+1)):
+        pin_data     = planned_output.get(pin_no, {'name': NOT_CONNECTED, 'connected': False})
+        name         = pin_data['name']
+        destinations = pin_data.get('destinations', None)
+
+        print(f"{name:<{max_name_len}} {pin_no:>2d}", end=' ')
+        if destinations:
+            print("->", " / ".join((
+                f"{p['designator']:<{max_designator_len}} {p['pin']:>2d}"
+                for p in destinations
+            )))
+        else:
+            if pin_data.get('connected', True):
+                print(f"   (connections not listed for {name})")
+            else:
+                print()    # Omit noise for not connected pins
+
+
+def print_pin_netlist(d: Design, c: Component, pin_no: int) -> None:
+    if pin_no in c.pin_nets:
+        net = c.pin_nets[pin_no]
+        planned_output = { pin_no: { 'name': net.name } }
+
+        if net.name not in ('GND', 'VCC'):
+            planned_output[pin_no]['destinations'] = [
+                { 'designator': connectedpin.designator,
+                  'name':       d.GetComponent(connectedpin.designator).name,
+                  'pin':        connectedpin.pin }
+                for connectedpin in net.pins
+                if not (connectedpin.designator == c.designator and connectedpin.pin == pin_no)
+            ]
+    else:
+        planned_output = {}         # Place holder for "not present"
+
+    print_pin_output(planned_output, pin_no, pin_no)
+
+
+def print_component_netlist(d: Design, c: Component) -> None:
+    planned_output = {}    # pin_no -> { name: ..., destinations: [...] }
+
+    # Collect output destinations
+    for pin_no, net in sorted(c.pin_nets.items()):
+        planned_output[pin_no] = { 'name': net.name }
+
+        if net.name not in ('GND', 'VCC'):
+            planned_output[pin_no]['destinations'] = [
+                { 'designator': connectedpin.designator,
+                  'name':       d.GetComponent(connectedpin.designator).name,
+                  'pin':        connectedpin.pin }
+                for connectedpin in net.pins
+                if not (connectedpin.designator == c.designator and connectedpin.pin == pin_no)
+            ]
+
+    print_pin_output(planned_output)
+
+
+def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('designator')
     parser.add_argument('pin', nargs="?", type=int)
     args = parser.parse_args()
 
-    if args.designator:
-        d = Design()
-        d.ReadCadTemp('cad.temp')
-        c = d.GetComponent(args.designator)
-        if not c:
-            print(f"Designator {args.designator} not found")
-            exit()
-        print(f"{c.designator}: {c.name} ({c.package})")
-        if args.pin:
-            if not args.pin in c.pin_nets:
-                print(f"Pin {args.pin} not found for designator {args.designator}")
-                exit()
-            net = c.pin_nets[args.pin]
-            print(f"Pin {args.pin}: Net {net.name} connects to:")
-            for pin in net.pins:
-                if not (pin.designator == c.designator and pin.pin == args.pin):
-                    print(f"\t{pin.designator} ({d.GetComponent(pin.designator).name}): pin {pin.pin}")
-        else:
-            for pin_no, net in sorted(c.pin_nets.items()):
+    d = Design()
+    d.ReadCadTemp('cad.temp')
 
-                print(f"{net.name:20}{pin_no:2} -> ", end = '')
-                #print(f"Pin {pin_no}: Net {net.name} connects to:")
-                if net.name != 'GND' and net.name != 'VCC':
-                    for connectedpin in net.pins:
-                        if not (connectedpin.designator == c.designator and connectedpin.pin == pin_no):
-                            print(f"{connectedpin.designator:5} {connectedpin.pin:2}   ", end ='')
-                    
-                else:
-                    print(f"Connections not listed for net {net.name}..", end = '')
-                print('')
-            
+    c = d.GetComponent(args.designator)
+    if not c:
+        print(f"Designator {args.designator} not found")
+        exit()
+
+    if args.pin:
+        pin_msg = f" -- pin {args.pin} only"
+    else:
+        pin_msg =  ""
+
+    print(f"{c.designator}: {c.name} ({c.package}){pin_msg}")
+    print()
+
+    if args.pin:
+        print_pin_netlist(d, c, args.pin)
+    else:
+        print_component_netlist(d, c)
+
+if __name__ == '__main__':
+    main()
